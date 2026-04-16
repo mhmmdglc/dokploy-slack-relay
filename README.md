@@ -68,7 +68,7 @@ node server.js
 Output:
 
 ```
-dokploy-slack-relay listening on :3131
+dokploy-slack-relay listening on :3232
 Routes:
   api -> POST /webhook/api
   frontend -> POST /webhook/frontend
@@ -77,7 +77,7 @@ Routes:
 Test with curl:
 
 ```bash
-curl -X POST http://localhost:3131/webhook/api \
+curl -X POST http://localhost:3232/webhook/api \
   -H "Content-Type: application/json" \
   -d '{
     "projectName": "my-saas",
@@ -125,7 +125,7 @@ The relay looks for configuration in this order:
 
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `PORT` | No | `3131` | Port to listen on |
+| `PORT` | No | `3232` | Port to listen on |
 | `DEBUG` | No | `false` | Log full incoming payloads |
 | `CONFIG` | No | — | Full config as a JSON string |
 | `CONFIG_PATH` | No | `./config.json` | Path to the config file |

@@ -8,7 +8,7 @@ const { URL } = require("url");
 const app = express();
 app.use(express.json());
 
-const PORT = process.env.PORT || 3131;
+const PORT = process.env.PORT || 3232;
 const DEBUG = process.env.DEBUG === "true";
 
 // --- config ---
