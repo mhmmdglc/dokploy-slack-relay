@@ -3,5 +3,5 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 COPY server.js ./
-EXPOSE 3000
+EXPOSE 3131
 CMD ["node", "server.js"]
