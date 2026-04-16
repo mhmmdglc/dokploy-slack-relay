@@ -11,6 +11,26 @@ app.use(express.json());
 const PORT = process.env.PORT || 3232;
 const DEBUG = process.env.DEBUG === "true";
 
+// --- commit store ---
+// GitHub push arrives first, Dokploy build event arrives later.
+// Store commit info per route so the Dokploy handler can merge it
+// into a single Slack message.
+
+const commitStore = new Map();
+const COMMIT_TTL = 10 * 60 * 1000; // 10 minutes
+
+function storeCommit(routeName, data) {
+  commitStore.set(routeName, { ...data, ts: Date.now() });
+}
+
+function consumeCommit(routeName) {
+  const entry = commitStore.get(routeName);
+  if (!entry) return undefined;
+  commitStore.delete(routeName);
+  if (Date.now() - entry.ts > COMMIT_TTL) return undefined;
+  return entry;
+}
+
 // --- config ---
 
 function loadConfig() {
@@ -168,7 +188,6 @@ function extractDokploy(body) {
 
   if (isDokployAttachment) {
     return {
-      source: "dokploy",
       project: getAttachmentField(body, "Project") || "unknown",
       application: getAttachmentField(body, "Application") || "unknown",
       eventType: parsePretext(body) || "unknown",
@@ -179,9 +198,7 @@ function extractDokploy(body) {
     };
   }
 
-  // Dokploy plain JSON fallback
   return {
-    source: "dokploy",
     project: dig(body, "projectName", "project.name", "project") || "unknown",
     application:
       dig(
@@ -203,11 +220,11 @@ function extractDokploy(body) {
 // --- extract: github ---
 
 function extractGithub(body) {
-  const repo = dig(body, "repository.full_name", "repository.name") || "unknown";
+  const repo =
+    dig(body, "repository.full_name", "repository.name") || "unknown";
   const branch = normalizeBranch(dig(body, "ref"));
   const repoUrl = dig(body, "repository.html_url");
 
-  // Collect commits
   const headCommit = body.head_commit;
   const commits = body.commits;
 
@@ -228,42 +245,52 @@ function extractGithub(body) {
     author = dig(last, "author.username", "author.name");
   }
 
-  // Truncate multi-line commit message to first line
   if (commitMessage) {
     commitMessage = commitMessage.split("\n")[0];
   }
 
-  const commitCount =
-    Array.isArray(commits) && commits.length > 1 ? commits.length : undefined;
-
-  return {
-    source: "github",
-    repo,
-    branch,
-    commitSha,
-    commitMessage,
-    commitUrl,
-    author,
-    repoUrl,
-    commitCount,
-  };
+  return { repo, branch, commitSha, commitMessage, commitUrl, author, repoUrl };
 }
 
-// --- build slack message: dokploy ---
+// --- build combined slack message ---
 
-function buildDokployMessage(fields) {
+function buildSlackMessage(dokploy, commit) {
   const { project, application, eventType, appType, time, color, actionUrl } =
-    fields;
+    dokploy;
 
   const statusEmoji = color === "#00FF00" ? ":white_check_mark:" : ":x:";
-  const text = `${statusEmoji} *${eventType}*\n*${project}* / *${application}*`;
+
+  const lines = [
+    `${statusEmoji} *${eventType}*`,
+    `*${project}* / *${application}*`,
+  ];
+
+  if (commit) {
+    if (commit.branch) lines.push(`Branch: \`${commit.branch}\``);
+    if (commit.commitSha && commit.commitUrl) {
+      lines.push(
+        `Commit: <${commit.commitUrl}|\`${commit.commitSha}\`> — ${commit.commitMessage || ""}`
+      );
+    } else if (commit.commitSha) {
+      lines.push(
+        `Commit: \`${commit.commitSha}\` — ${commit.commitMessage || ""}`
+      );
+    }
+    if (commit.author) lines.push(`Author: ${commit.author}`);
+  }
 
   const slackFields = [];
   if (appType)
     slackFields.push({ title: "Type", value: appType, short: true });
   if (time) slackFields.push({ title: "Time", value: time, short: true });
 
-  const attachment = { color: color || "#00FF00", text, fields: slackFields };
+  const attachment = {
+    color: color || "#00FF00",
+    text: lines.join("\n"),
+    fields: slackFields,
+    mrkdwn_in: ["text"],
+  };
+
   if (actionUrl) {
     attachment.actions = [
       { type: "button", text: "View Details", url: actionUrl },
@@ -271,54 +298,6 @@ function buildDokployMessage(fields) {
   }
 
   return { attachments: [attachment] };
-}
-
-// --- build slack message: github ---
-
-function buildGithubMessage(fields) {
-  const {
-    repo,
-    branch,
-    commitSha,
-    commitMessage,
-    commitUrl,
-    author,
-    repoUrl,
-    commitCount,
-  } = fields;
-
-  const repoLink = repoUrl ? `<${repoUrl}|${repo}>` : repo;
-  const commitLink =
-    commitSha && commitUrl
-      ? `<${commitUrl}|\`${commitSha}\`>`
-      : commitSha
-        ? `\`${commitSha}\``
-        : undefined;
-
-  const pushLabel =
-    commitCount && commitCount > 1
-      ? `${commitCount} new commits`
-      : "New push";
-
-  const lines = [`:github: *${pushLabel}*`, `*${repoLink}*`];
-
-  if (branch) lines.push(`Branch: \`${branch}\``);
-  if (commitLink && commitMessage) {
-    lines.push(`Commit: ${commitLink} — ${commitMessage}`);
-  } else if (commitMessage) {
-    lines.push(`Commit: ${commitMessage}`);
-  }
-  if (author) lines.push(`Author: ${author}`);
-
-  return {
-    attachments: [
-      {
-        color: "#24292f",
-        text: lines.join("\n"),
-        mrkdwn_in: ["text"],
-      },
-    ],
-  };
 }
 
 // --- send to slack ---
@@ -359,33 +338,7 @@ function postToSlack(webhookUrl, payload) {
   });
 }
 
-// --- request handler factory ---
-
-function makeDokployHandler(route) {
-  return async (req, res) => {
-    const label = route.name || route.dokployPath;
-
-    if (DEBUG) {
-      console.log(
-        `[dokploy][${label}] Incoming payload:`,
-        JSON.stringify(req.body, null, 2)
-      );
-    }
-
-    try {
-      const fields = extractDokploy(req.body);
-      const message = buildDokployMessage(fields);
-      await postToSlack(route.slackWebhookUrl, message);
-      console.log(
-        `[dokploy][${label}] Relayed ${fields.eventType} for ${fields.application}`
-      );
-      res.json({ ok: true });
-    } catch (err) {
-      console.error(`[dokploy][${label}] Failed to relay:`, err.message);
-      res.status(502).json({ ok: false, error: err.message });
-    }
-  };
-}
+// --- request handlers ---
 
 function makeGithubHandler(route) {
   return async (req, res) => {
@@ -405,16 +358,51 @@ function makeGithubHandler(route) {
       );
     }
 
-    try {
-      const fields = extractGithub(req.body);
-      const message = buildGithubMessage(fields);
-      await postToSlack(route.slackWebhookUrl, message);
+    const fields = extractGithub(req.body);
+
+    // Store commit info — Dokploy handler will pick it up later
+    storeCommit(label, fields);
+
+    console.log(
+      `[github][${label}] Stored commit ${fields.commitSha || "?"} on ${fields.branch || "?"}`
+    );
+
+    res.json({ ok: true });
+  };
+}
+
+function makeDokployHandler(route) {
+  return async (req, res) => {
+    const label = route.name || route.dokployPath;
+
+    if (DEBUG) {
       console.log(
-        `[github][${label}] Relayed push ${fields.commitSha || ""} on ${fields.branch || "unknown"}`
+        `[dokploy][${label}] Incoming payload:`,
+        JSON.stringify(req.body, null, 2)
+      );
+    }
+
+    try {
+      const dokploy = extractDokploy(req.body);
+
+      // Try to get stored commit info from GitHub
+      const commit = consumeCommit(label);
+
+      if (commit) {
+        console.log(
+          `[dokploy][${label}] Merged with commit ${commit.commitSha || "?"}`
+        );
+      }
+
+      const message = buildSlackMessage(dokploy, commit);
+      await postToSlack(route.slackWebhookUrl, message);
+
+      console.log(
+        `[dokploy][${label}] Relayed ${dokploy.eventType} for ${dokploy.application}`
       );
       res.json({ ok: true });
     } catch (err) {
-      console.error(`[github][${label}] Failed to relay:`, err.message);
+      console.error(`[dokploy][${label}] Failed to relay:`, err.message);
       res.status(502).json({ ok: false, error: err.message });
     }
   };
@@ -426,11 +414,11 @@ const config = loadConfig();
 validateConfig(config);
 
 for (const route of config.routes) {
-  if (route.dokployPath) {
-    app.post(route.dokployPath, makeDokployHandler(route));
-  }
   if (route.githubPath) {
     app.post(route.githubPath, makeGithubHandler(route));
+  }
+  if (route.dokployPath) {
+    app.post(route.dokployPath, makeDokployHandler(route));
   }
 }
 
