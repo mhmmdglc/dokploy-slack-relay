@@ -1,0 +1,22 @@
+{
+  "name": "dokploy-slack-relay",
+  "version": "1.0.0",
+  "description": "Webhook relay that forwards Dokploy deployment events to Slack",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [
+    "dokploy",
+    "slack",
+    "webhook",
+    "relay",
+    "deployment",
+    "notifications"
+  ],
+  "author": "Muhammed Gulcu",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "routes": [
+    {
+      "name": "my-api",
+      "path": "/webhook/my-api",
+      "slackWebhookUrl": "YOUR_SLACK_WEBHOOK_URL_HERE"
+    },
+    {
+      "name": "my-frontend",
+      "path": "/webhook/my-frontend",
+      "slackWebhookUrl": "YOUR_SLACK_WEBHOOK_URL_HERE"
+    }
+  ]
+}
