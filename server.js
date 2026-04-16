@@ -98,9 +98,84 @@ function shortSha(sha) {
   return String(sha).slice(0, 7);
 }
 
+// --- extract attachment field by title ---
+
+function getAttachmentField(body, title) {
+  const attachments = body.attachments;
+  if (!Array.isArray(attachments)) return undefined;
+
+  for (const att of attachments) {
+    if (!Array.isArray(att.fields)) continue;
+    for (const f of att.fields) {
+      if (f.title && f.title.toLowerCase() === title.toLowerCase()) {
+        return f.value;
+      }
+    }
+  }
+  return undefined;
+}
+
+// --- parse event from pretext ---
+
+function parsePretext(body) {
+  const attachments = body.attachments;
+  if (!Array.isArray(attachments)) return undefined;
+
+  for (const att of attachments) {
+    if (att.pretext) {
+      // strip emoji codes like :white_check_mark: and markdown bold *...*
+      return att.pretext
+        .replace(/:[a-z_]+:/g, "")
+        .replace(/\*/g, "")
+        .trim();
+    }
+  }
+  return undefined;
+}
+
+// --- get attachment color ---
+
+function getAttachmentColor(body) {
+  const attachments = body.attachments;
+  if (!Array.isArray(attachments) || !attachments[0]) return undefined;
+  return attachments[0].color;
+}
+
+// --- get action url ---
+
+function getActionUrl(body) {
+  const attachments = body.attachments;
+  if (!Array.isArray(attachments)) return undefined;
+
+  for (const att of attachments) {
+    if (!Array.isArray(att.actions)) continue;
+    for (const action of att.actions) {
+      if (action.url) return action.url;
+    }
+  }
+  return undefined;
+}
+
 // --- extract fields from payload ---
 
 function extract(body) {
+  // Dokploy sends Slack-formatted payloads with attachments[].fields[]
+  const isDokployFormat =
+    Array.isArray(body.attachments) && body.attachments.length > 0;
+
+  if (isDokployFormat) {
+    const project = getAttachmentField(body, "Project") || "unknown";
+    const application = getAttachmentField(body, "Application") || "unknown";
+    const eventType = parsePretext(body) || "unknown";
+    const appType = getAttachmentField(body, "Type");
+    const time = getAttachmentField(body, "Time");
+    const color = getAttachmentColor(body);
+    const actionUrl = getActionUrl(body);
+
+    return { project, application, eventType, appType, time, color, actionUrl };
+  }
+
+  // Fallback: plain JSON payload
   const project =
     dig(body, "project.name", "projectName", "project") || "unknown";
 
@@ -162,10 +237,40 @@ function extract(body) {
 
 // --- build slack message ---
 
-function buildSlackMessage(fields, routeName) {
-  const { project, application, eventType, branch, commitSha, commitMessage } =
-    fields;
+function buildSlackMessage(fields) {
+  const {
+    project,
+    application,
+    eventType,
+    appType,
+    time,
+    color,
+    actionUrl,
+    branch,
+    commitSha,
+    commitMessage,
+  } = fields;
 
+  // Dokploy format — rich message
+  if (color !== undefined) {
+    const statusEmoji = color === "#00FF00" ? ":white_check_mark:" : ":x:";
+    const text = `${statusEmoji} *${eventType}*\n*${project}* / *${application}*`;
+
+    const slackFields = [];
+    if (appType) slackFields.push({ title: "Type", value: appType, short: true });
+    if (time) slackFields.push({ title: "Time", value: time, short: true });
+
+    const attachment = { color, text, fields: slackFields };
+    if (actionUrl) {
+      attachment.actions = [
+        { type: "button", text: "View Details", url: actionUrl },
+      ];
+    }
+
+    return { attachments: [attachment] };
+  }
+
+  // Fallback — plain text
   const lines = [
     `*${project}* / *${application}*`,
     `Event: \`${eventType}\``,
