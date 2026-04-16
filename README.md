@@ -1,35 +1,27 @@
 # dokploy-slack-relay
 
-Lightweight webhook relay that forwards [Dokploy](https://dokploy.com) deployment events to Slack.
+Lightweight webhook relay that forwards [Dokploy](https://dokploy.com) deployment events and GitHub push events to Slack.
 
-Add unlimited projects — each one gets its own endpoint and Slack channel. Zero limits, zero complexity.
+Add unlimited projects — each one gets its own endpoints and Slack channel. Zero limits, zero complexity.
 
 ## How it works
 
 ```
-                                    ┌───────────────────┐
- Dokploy Project A ── POST /webhook/api ──────┐         │
-                                              │         │
- Dokploy Project B ── POST /webhook/frontend ─┤  relay  ├──► Slack channels
-                                              │         │
- Dokploy Project C ── POST /webhook/backend ──┤         │
-                                              │         │
- Dokploy Project D ── POST /webhook/worker ───┘         │
-                                    └───────────────────┘
+                                         ┌───────────────────┐
+ Dokploy ── POST /dokploy/api ──────┐    │                   │
+ GitHub  ── POST /github/api ───────┤    │                   │
+                                    ├───►│   dokploy-slack   ├──► Slack channels
+ Dokploy ── POST /dokploy/frontend ─┤    │       relay       │
+ GitHub  ── POST /github/frontend ──┘    │                   │
+                                         └───────────────────┘
 ```
 
-You define routes in a simple JSON config. Each route maps a webhook endpoint to a Slack incoming webhook URL. Dokploy sends deployment events to your relay, and the relay formats them into readable Slack messages.
+Each project can have two webhook sources:
 
-**Extracted fields:**
+- **Dokploy** — build status, project name, application name, time, status link
+- **GitHub** — commit SHA, commit message, branch, author, commit link
 
-- Project name
-- Application / service name
-- Event type (build, deploy, error, etc.)
-- Branch (normalized — `refs/heads/preview` becomes `preview`)
-- Commit SHA (shortened to 7 characters)
-- Commit message
-
-The relay tries multiple possible field paths in the payload, so it works even if Dokploy's payload structure changes between versions.
+Both land in the same Slack channel so you get the full picture: who pushed what, and whether the build succeeded.
 
 ## Quick start
 
@@ -47,13 +39,15 @@ Edit `config.json`:
   "routes": [
     {
       "name": "api",
-      "path": "/webhook/api",
-      "slackWebhookUrl": "https://hooks.slack.com/services/T.../B.../xxx"
+      "dokployPath": "/dokploy/api",
+      "githubPath": "/github/api",
+      "slackWebhookUrl": "YOUR_SLACK_WEBHOOK_URL_HERE"
     },
     {
       "name": "frontend",
-      "path": "/webhook/frontend",
-      "slackWebhookUrl": "https://hooks.slack.com/services/T.../B.../yyy"
+      "dokployPath": "/dokploy/frontend",
+      "githubPath": "/github/frontend",
+      "slackWebhookUrl": "YOUR_SLACK_WEBHOOK_URL_HERE"
     }
   ]
 }
@@ -70,54 +64,32 @@ Output:
 ```
 dokploy-slack-relay listening on :3232
 Routes:
-  api -> POST /webhook/api
-  frontend -> POST /webhook/frontend
-```
-
-Test with curl:
-
-```bash
-curl -X POST http://localhost:3232/webhook/api \
-  -H "Content-Type: application/json" \
-  -d '{
-    "projectName": "my-saas",
-    "applicationName": "api",
-    "type": "deploy",
-    "branch": "main",
-    "commitSha": "abc1234567890",
-    "commitMessage": "fix: resolve login bug"
-  }'
-```
-
-Slack message:
-
-```
-my-saas / api
-Event: deploy
-Branch: main
-Commit: abc1234
-Message: fix: resolve login bug
+  api [dokploy] -> POST /dokploy/api
+  api [github]  -> POST /github/api
+  frontend [dokploy] -> POST /dokploy/frontend
+  frontend [github]  -> POST /github/frontend
 ```
 
 ## Configuration
 
 ### Route definition
 
-Each route in `config.json` requires three fields:
+Each route in `config.json`:
 
-| Field | Description |
-|---|---|
-| `name` | Label shown in logs (e.g. `"api"`) |
-| `path` | Unique POST endpoint path (e.g. `"/webhook/api"`) |
-| `slackWebhookUrl` | Slack incoming webhook URL for this route |
+| Field | Required | Description |
+|---|---|---|
+| `name` | No | Label shown in logs |
+| `dokployPath` | At least one | POST endpoint for Dokploy webhooks |
+| `githubPath` | At least one | POST endpoint for GitHub webhooks |
+| `slackWebhookUrl` | Yes | Slack incoming webhook URL |
 
-Add as many routes as you need. There is no limit.
+You can use only `dokployPath`, only `githubPath`, or both. Add as many routes as you need — there is no limit.
 
 ### Loading config
 
 The relay looks for configuration in this order:
 
-1. **`CONFIG` env var** — JSON string containing the full config (best for Docker / Dokploy)
+1. **`CONFIG` env var** — JSON string (best for Docker / Dokploy)
 2. **`CONFIG_PATH` env var** — path to a JSON file
 3. **`./config.json`** — default file in the project root
 
@@ -138,29 +110,63 @@ The relay looks for configuration in this order:
 4. Add the `CONFIG` environment variable with your routes:
 
 ```
-{"routes":[{"name":"api","path":"/webhook/api","slackWebhookUrl":"https://hooks.slack.com/services/T.../B.../xxx"},{"name":"web","path":"/webhook/web","slackWebhookUrl":"https://hooks.slack.com/services/T.../B.../yyy"}]}
+{"routes":[{"name":"api","dokployPath":"/dokploy/api","githubPath":"/github/api","slackWebhookUrl":"YOUR_SLACK_WEBHOOK_URL_HERE"}]}
 ```
 
 5. Deploy.
 
-That's it. The container starts, registers all your routes, and begins relaying events.
-
-## Connect Dokploy webhooks to the relay
+## Connect Dokploy webhooks
 
 For each project you want to monitor:
 
 1. Open the project in the Dokploy dashboard.
-2. Go to **Settings > Notifications** (or the webhook / notification section).
-3. Add a new webhook notification pointing to the matching route:
+2. Go to **Settings > Notifications**.
+3. Add a new webhook notification pointing to:
 
 ```
-https://your-relay-domain.com/webhook/api
+https://your-relay-domain.com/dokploy/api
 ```
 
-4. Select the events you want to receive (deploy, build, error, etc.).
+4. Select the events you want to receive.
 5. Save.
 
-Repeat for every project. Each one uses its own `/webhook/...` path defined in your config.
+## Connect GitHub webhooks
+
+For each repo you want to monitor:
+
+1. Go to your GitHub repo > **Settings > Webhooks > Add webhook**.
+2. Set the **Payload URL** to:
+
+```
+https://your-relay-domain.com/github/api
+```
+
+3. Set **Content type** to `application/json`.
+4. Under **Which events**, select **Just the push event**.
+5. Save.
+
+The relay only processes `push` events and ignores everything else (ping, pull request, etc.).
+
+## Slack message examples
+
+**Dokploy event:**
+
+```
+✅ Build Success
+kordinat / Frontend
+Type: application    Time: 4/16/2026, 1:06 PM
+[View Details]
+```
+
+**GitHub push event:**
+
+```
+🔀 New push
+owner/my-repo
+Branch: main
+Commit: abc1234 — fix: resolve login bug
+Author: johndoe
+```
 
 ## Create a Slack incoming webhook
 

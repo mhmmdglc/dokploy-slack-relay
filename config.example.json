@@ -1,13 +1,15 @@
 {
   "routes": [
     {
-      "name": "my-api",
-      "path": "/webhook/my-api",
+      "name": "api",
+      "dokployPath": "/dokploy/api",
+      "githubPath": "/github/api",
       "slackWebhookUrl": "YOUR_SLACK_WEBHOOK_URL_HERE"
     },
     {
-      "name": "my-frontend",
-      "path": "/webhook/my-frontend",
+      "name": "frontend",
+      "dokployPath": "/dokploy/frontend",
+      "githubPath": "/github/frontend",
       "slackWebhookUrl": "YOUR_SLACK_WEBHOOK_URL_HERE"
     }
   ]
